@@ -1,7 +1,7 @@
 /*
  * 小黑盒每日签到 for Loon
  *
- * 版本: v1.0.0-loon
+ * 版本: v1.0.1-loon
  *
  * 改编自 MinamiHashiRun0/heybox-checkin (MIT License, Copyright (c) 2026 MinamiHashiRun0)
  * https://github.com/MinamiHashiRun0/heybox-checkin
@@ -26,7 +26,7 @@
 
 "use strict";
 
-var VERSION = "1.0.0-loon";
+var VERSION = "1.0.1-loon";
 var DEFAULT_HKEY_API = "https://hkey.qcciii.com/hkey";
 var API_BASE = "https://api.xiaoheihe.cn";
 
@@ -314,7 +314,8 @@ function hkeyApi() {
 
 // ---------------------------------------------------------------- 接口
 
-function fetchHkey(heyboxId, imei, path, timeSec) {
+// 2026-10-26 起 hkey 服务要求 os_version, 并额外返回 _rnd (由 heybox_id/imei/time/os_version 决定)
+function fetchHkey(heyboxId, device, path, timeSec) {
   var url =
     hkeyApi() +
     "?" +
@@ -322,8 +323,9 @@ function fetchHkey(heyboxId, imei, path, timeSec) {
       mode: "request",
       path: path,
       time: String(timeSec),
-      imei: imei,
-      heybox_id: heyboxId
+      imei: device.imei,
+      heybox_id: heyboxId,
+      os_version: device.os_version
     });
   return httpGetJson(url, { "User-Agent": UA_APP, Accept: "application/json" }).then(function (payload) {
     if (!payload) return { error: "hkey 服务无响应" };
@@ -335,7 +337,8 @@ function fetchHkey(heyboxId, imei, path, timeSec) {
     return {
       hkey: text(result.hkey),
       version: text(result.version),
-      build: text(result.build)
+      build: text(result.build),
+      rnd: text(result._rnd)
     };
   });
 }
@@ -355,6 +358,7 @@ function signedQuery(account, device, hkey, timeSec, extra) {
     version: hkey.version || device.version,
     build: hkey.build || device.build,
     _time: String(timeSec),
+    _rnd: hkey.rnd,
     dw: device.dw,
     channel: device.channel,
     x_app: device.x_app,
@@ -379,7 +383,7 @@ function appHeaders(account) {
 
 function signedGet(account, device, path, extra) {
   var timeSec = Math.floor(Date.now() / 1000);
-  return fetchHkey(account.heyboxId, device.imei, path, timeSec).then(function (hkey) {
+  return fetchHkey(account.heyboxId, device, path, timeSec).then(function (hkey) {
     if (hkey.error) return { error: hkey.error };
     var url = API_BASE + path + "?" + signedQuery(account, device, hkey, timeSec, extra);
     return httpGetJson(url, appHeaders(account)).then(function (payload) {
