@@ -1,0 +1,12 @@
+#!name=小黑盒签到
+#!desc=小黑盒每日自动签到 | 开启 MitM 后打开小黑盒 App 自动录入账号, 每天 8:00 定时签到 | 签名依赖第三方 hkey 服务 | 改编自 MinamiHashiRun0/heybox-checkin (MIT)
+#!author=lpleasure (Loon 适配), MinamiHashiRun0 (原作)
+#!homepage=https://github.com/lpleasure/heybox-Auto-Check-in-loon
+
+[Script]
+# 想改签到时间就改 cron 表达式 (分 时 日 月 周)
+cron "0 8 * * *" script-path=https://raw.githubusercontent.com/lpleasure/heybox-Auto-Check-in-loon/main/heybox.js, timeout=60, tag=小黑盒签到
+http-request ^https?:\/\/(api|data)\.xiaoheihe\.cn\/ script-path=https://raw.githubusercontent.com/lpleasure/heybox-Auto-Check-in-loon/main/heybox.js, requires-body=false, timeout=10, tag=小黑盒抓包
+
+[MitM]
+hostname = api.xiaoheihe.cn, data.xiaoheihe.cn
