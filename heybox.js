@@ -1,7 +1,7 @@
 /*
  * 小黑盒每日签到 for Loon
  *
- * 版本: v1.0.1-loon
+ * 版本: v1.0.2-loon
  *
  * 改编自 MinamiHashiRun0/heybox-checkin (MIT License, Copyright (c) 2026 MinamiHashiRun0)
  * https://github.com/MinamiHashiRun0/heybox-checkin
@@ -13,7 +13,6 @@
  *
  * 存储键:
  *   HEYBOX_ACCOUNTS   heybox_id#pkey=..;x_xhh_tokenid=..   多账号用 & 分隔
- *   HEYBOX_DEVICE     抓包得到的设备参数 JSON
  *   HEYBOX_STATE      最近一次运行结果 JSON
  *   HEYBOX_HKEY_API   可选, 覆盖默认 hkey 服务地址
  *
@@ -26,7 +25,7 @@
 
 "use strict";
 
-var VERSION = "1.0.1-loon";
+var VERSION = "1.0.2-loon";
 var DEFAULT_HKEY_API = "https://hkey.qcciii.com/hkey";
 var API_BASE = "https://api.xiaoheihe.cn";
 
@@ -43,7 +42,9 @@ var UA_APP =
   "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36 ApiMaxJia/1.0";
 var REFERER_APP = "http://api.maxjia.com/";
 
-var DEVICE_DEFAULTS = {
+// hkey 服务按 Android App 签名 (返回的 version/build 也是 Android 版),
+// 所以请求固定用 Android 设备参数; iOS App 抓到的 os_type/version 等不能混进来
+var DEVICE_PROFILE = {
   os_type: "Android",
   x_os_type: "Android",
   x_client_type: "mobile",
@@ -52,16 +53,10 @@ var DEVICE_DEFAULTS = {
   channel: "heybox",
   x_app: "heybox",
   time_zone: "Asia/Shanghai",
-  device_info: "HBP-AL00"
+  device_info: "HBP-AL00",
+  // 与既有实现保持一致的 imei
+  imei: "4187fb55b1be198a"
 };
-var DEVICE_KEYS = [
-  "lang", "device_info", "device_id", "x_app", "os_type", "x_os_type",
-  "x_client_type", "os_version", "version", "dw", "time_zone", "channel",
-  "build", "imei"
-];
-
-// 抓包拿不到 imei 时的兜底值, 与既有实现保持一致
-var IMEI_FALLBACK = "4187fb55b1be198a";
 // Loon 的 $httpClient timeout 单位是毫秒 (Surge 是秒)
 var REQUEST_TIMEOUT = typeof $loon !== "undefined" ? 12000 : 12;
 var SIGN_SETTLE_MS = 1500;
@@ -294,18 +289,7 @@ function toAccount(item) {
 }
 
 function readDevice() {
-  var captured = safeParse(getStore(KEY_DEVICE), {});
-  var merged = {};
-  Object.keys(DEVICE_DEFAULTS).forEach(function (key) {
-    merged[key] = DEVICE_DEFAULTS[key];
-  });
-  Object.keys(captured || {}).forEach(function (key) {
-    if (captured[key] !== undefined && captured[key] !== null && String(captured[key]) !== "") {
-      merged[key] = captured[key];
-    }
-  });
-  if (!merged.imei) merged.imei = IMEI_FALLBACK;
-  return merged;
+  return Object.assign({}, DEVICE_PROFILE);
 }
 
 function hkeyApi() {
@@ -388,6 +372,11 @@ function signedGet(account, device, path, extra) {
     var url = API_BASE + path + "?" + signedQuery(account, device, hkey, timeSec, extra);
     return httpGetJson(url, appHeaders(account)).then(function (payload) {
       if (!payload) return { error: "接口无响应或无有效 JSON" };
+      if (isExpired(payload)) return { error: "Cookie 已失效, 请打开小黑盒 App 重新录入", expired: true };
+      if (text(payload.status) !== "ok") {
+        log(path + " 返回 " + JSON.stringify(payload).slice(0, 300));
+        return { error: "接口返回 " + text(payload.status) + " " + text(payload.msg) };
+      }
       return { payload: payload };
     });
   });
@@ -420,8 +409,7 @@ function readSignState(account, device) {
     var result = response.payload.result || {};
     return {
       state: text(result.state),
-      summary: summarizeState(result),
-      expired: isExpired(response.payload)
+      summary: summarizeState(result)
     };
   });
 }
@@ -460,11 +448,6 @@ function signOne(account, device) {
       var state = text((payload.result || {}).state);
       if (state === "ignore") {
         out.status = "今日已签到";
-        return null;
-      }
-      if (isExpired(payload)) {
-        out.status = "Cookie 已失效";
-        out.detail = "请打开小黑盒 App 重新抓包录入";
         return null;
       }
 
@@ -546,18 +529,8 @@ function capture() {
     return;
   }
 
-  var device = {};
-  DEVICE_KEYS.forEach(function (key) {
-    if (params[key]) device[key] = params[key];
-  });
-
-  var changed = false;
-  var known = safeParse(getStore(KEY_DEVICE), {});
-  var nextDevice = Object.assign({}, known || {}, device);
-  if (JSON.stringify(nextDevice) !== JSON.stringify(known || {})) {
-    setStore(JSON.stringify(nextDevice), KEY_DEVICE);
-    changed = true;
-  }
+  // 旧版本存过 iOS 设备参数, 已不再使用
+  if (getStore(KEY_DEVICE)) setStore("", KEY_DEVICE);
 
   var account = heyboxId + "#pkey=" + pkey + ";x_xhh_tokenid=" + tokenId;
   var accounts = parseAccounts(getStore(KEY_ACCOUNTS));
@@ -569,12 +542,13 @@ function capture() {
   });
   if (!existed || accounts.indexOf(account) < 0) {
     setStore([account].concat(kept).join("&"), KEY_ACCOUNTS);
-    changed = true;
-  }
-
-  if (changed) {
-    notify("小黑盒签到 v" + VERSION, "已录入账号 " + heyboxId, "设备参数已同步, 每日将自动签到");
-    log("已录入账号 " + mask(account));
+    // 只在首次录入时通知; Cookie 刷新静默更新, 避免每次打开 App 都弹
+    if (!existed) {
+      notify("小黑盒签到 v" + VERSION, "已录入账号 " + heyboxId, "每日将自动签到");
+      log("已录入账号 " + mask(account));
+    } else {
+      log("已更新账号 Cookie " + mask(account));
+    }
   }
   done();
 }
